@@ -5,7 +5,6 @@
   "defaultThinkingLevel": "medium",
   "packages": [
     "npm:pi-agent-codebase-workflows",
-    "npm:pi-lean-ctx",
     "npm:@wissem_hajbi/pi-nointl"
   ]
 }
