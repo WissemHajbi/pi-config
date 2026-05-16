@@ -26,6 +26,7 @@ function humanizeBranchName(branch: string): string {
 
 function stripConventionalPrefix(subject: string): string {
   return subject
+    .replace(/^:[a-z0-9_+-]+:\s*/i, "")
     .replace(/^(feat|fix|docs|chore|refactor|test|ci|perf|build|style|revert)(\([^)]+\))?:\s*/i, "")
     .replace(/[.]+$/, "")
     .trim();
@@ -37,14 +38,33 @@ function shorten(text: string, max = 72): string {
   return `${trimmed.slice(0, max - 1).trimEnd()}…`;
 }
 
-function remoteToGitHubBase(remoteUrl: string): string | null {
+function parseGitHubRemote(remoteUrl: string): { webBase: string; owner: string; repo: string } | null {
   const sshLikeMatch = remoteUrl.match(/^git@([^:]+):([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshLikeMatch) return `https://${sshLikeMatch[1]}/${sshLikeMatch[2]}/${sshLikeMatch[3]}`;
+  if (sshLikeMatch) {
+    return {
+      webBase: `https://${sshLikeMatch[1]}/${sshLikeMatch[2]}/${sshLikeMatch[3]}`,
+      owner: sshLikeMatch[2],
+      repo: sshLikeMatch[3],
+    };
+  }
 
   const urlMatch = remoteUrl.match(/^(?:https?:\/\/|ssh:\/\/git@)([^/]+)\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (urlMatch) return `https://${urlMatch[1]}/${urlMatch[2]}/${urlMatch[3]}`;
+  if (urlMatch) {
+    return {
+      webBase: `https://${urlMatch[1]}/${urlMatch[2]}/${urlMatch[3]}`,
+      owner: urlMatch[2],
+      repo: urlMatch[3],
+    };
+  }
 
   return null;
+}
+
+function cleanRemoteBranchName(ref: string): string | null {
+  if (!ref.startsWith("origin/")) return null;
+  const branch = ref.slice("origin/".length);
+  if (!branch || branch === "HEAD" || branch === "origin") return null;
+  return branch;
 }
 
 async function git(pi: ExtensionAPI, cwd: string, args: string[], signal?: AbortSignal) {
@@ -52,7 +72,15 @@ async function git(pi: ExtensionAPI, cwd: string, args: string[], signal?: Abort
 }
 
 async function openUrl(pi: ExtensionAPI, cwd: string, url: string, signal?: AbortSignal) {
-  return pi.exec("cmd.exe", ["/c", "start", "", `"${url}"`], { cwd, signal });
+  if (process.platform === "win32") {
+    return pi.exec("cmd.exe", ["/d", "/s", "/c", "start", "", url], { cwd, signal });
+  }
+
+  if (process.platform === "darwin") {
+    return pi.exec("open", [url], { cwd, signal });
+  }
+
+  return pi.exec("xdg-open", [url], { cwd, signal });
 }
 
 export default function (pi: ExtensionAPI) {
@@ -70,22 +98,22 @@ export default function (pi: ExtensionAPI) {
         .split(/\r?\n/)
         .map((b) => b.trim())
         .filter(Boolean)
-        .filter((b) => b !== current);
+        .filter((b) => b !== current && b !== "origin" && b !== "HEAD");
 
-      const remoteBranchesResult = await git(pi, ctx.cwd, ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"], ctx.signal);
+      const remoteBranchesResult = await git(pi, ctx.cwd, ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"], ctx.signal);
       const remoteBranches = remoteBranchesResult.stdout
         .split(/\r?\n/)
         .map((b) => b.trim())
         .filter(Boolean)
-        .map((b) => b.replace(/^origin\//, ""))
-        .filter((b) => b && b !== "HEAD" && b !== current);
+        .map(cleanRemoteBranchName)
+        .filter((b): b is string => Boolean(b))
+        .filter((b) => b !== current);
 
       const remoteHeadResult = await git(pi, ctx.cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], ctx.signal);
       const defaultRemoteBranch = firstLine(remoteHeadResult.stdout).replace(/^origin\//, "");
 
       const branchChoices = Array.from(new Set([defaultRemoteBranch, ...remoteBranches, ...localBranches]))
-        .filter(Boolean)
-        .filter((branch) => branch !== current)
+        .filter((branch) => branch && branch !== current && branch !== "origin")
         .sort((a, b) => {
           if (a === defaultRemoteBranch) return -1;
           if (b === defaultRemoteBranch) return 1;
@@ -152,7 +180,7 @@ export default function (pi: ExtensionAPI) {
       if (upstreamResult.code !== 0) {
         const originResult = await git(pi, ctx.cwd, ["remote", "get-url", "origin"], ctx.signal);
         if (originResult.code !== 0) {
-          ctx.ui.notify("No here upstream branch and no origin remote found.", "error");
+          ctx.ui.notify("No upstream branch and no origin remote found.", "error");
           return;
         }
 
@@ -164,21 +192,52 @@ export default function (pi: ExtensionAPI) {
       }
 
       const originResult = await git(pi, ctx.cwd, ["remote", "get-url", "origin"], ctx.signal);
-      const githubBase = firstLine(originResult.stdout) ? remoteToGitHubBase(firstLine(originResult.stdout)) : null;
-      if (!githubBase) {
+      const repo = firstLine(originResult.stdout) ? parseGitHubRemote(firstLine(originResult.stdout)) : null;
+      if (!repo) {
         ctx.ui.notify("origin remote is not a GitHub URL.", "error");
         return;
       }
 
-      const compareUrl = `${githubBase}/compare/${encodeURIComponent(target)}...${encodeURIComponent(current)}?expand=1&title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
-      ctx.ui.notify(`Opening PR page for ${current} → ${target}...`, "info");
-      const openResult = await openUrl(pi, ctx.cwd, compareUrl, ctx.signal);
-      if (openResult.code !== 0) {
-        ctx.ui.notify(compareUrl, "warning");
+      const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? process.env.GITHUB_API_TOKEN ?? process.env.GITHUB_PAT;
+      if (!token) {
+        ctx.ui.notify("Set GH_TOKEN or GITHUB_TOKEN to create PRs programmatically.", "error");
         return;
       }
 
-      ctx.ui.notify("PR page opened in your browser.", "success");
+      ctx.ui.notify(`Creating PR for ${current} → ${target}...`, "info");
+      const response = await fetch(`https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title,
+          body,
+          head: current,
+          base: target,
+          draft: false,
+        }),
+        signal: ctx.signal,
+      });
+
+      const payload = (await response.json().catch(() => null)) as { html_url?: string; message?: string; errors?: Array<{ message?: string }> } | null;
+      if (!response.ok) {
+        const message = payload?.message ?? payload?.errors?.[0]?.message ?? `GitHub API error (${response.status})`;
+        ctx.ui.notify(message, "error");
+        return;
+      }
+
+      const prUrl = payload?.html_url;
+      if (!prUrl) {
+        ctx.ui.notify("PR created but GitHub did not return a URL.", "warning");
+        return;
+      }
+
+      await openUrl(pi, ctx.cwd, prUrl, ctx.signal);
+      ctx.ui.notify(`PR created and opened: ${prUrl}`, "success");
     },
   });
 }
