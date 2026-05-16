@@ -152,7 +152,7 @@ export default function (pi: ExtensionAPI) {
       if (upstreamResult.code !== 0) {
         const originResult = await git(pi, ctx.cwd, ["remote", "get-url", "origin"], ctx.signal);
         if (originResult.code !== 0) {
-          ctx.ui.notify("No upstream branch and no origin remote found.", "error");
+          ctx.ui.notify("No here upstream branch and no origin remote found.", "error");
           return;
         }
 
