@@ -62,6 +62,8 @@ function parseGitHubRemote(remoteUrl: string): { webBase: string; owner: string;
   }
 
   return null;
+  return null;
+  return null;
 }
 
 // Ignore symbolic refs like HEAD and keep only real remote branches.
