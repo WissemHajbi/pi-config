@@ -67,6 +67,13 @@ function cleanRemoteBranchName(ref: string): string | null {
   return branch;
 }
 
+function parseUpstreamRef(ref: string): { remote: string; branch: string } | null {
+  const [remote, ...branchParts] = ref.split("/");
+  const branch = branchParts.join("/").trim();
+  if (!remote || !branch) return null;
+  return { remote, branch };
+}
+
 async function git(pi: ExtensionAPI, cwd: string, args: string[], signal?: AbortSignal) {
   return pi.exec("git", args, { cwd, signal });
 }
@@ -176,23 +183,14 @@ export default function (pi: ExtensionAPI) {
       ];
       const body = bodyLines.join("\n");
 
-      const upstreamResult = await git(pi, ctx.cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], ctx.signal);
-      if (upstreamResult.code !== 0) {
-        const originResult = await git(pi, ctx.cwd, ["remote", "get-url", "origin"], ctx.signal);
-        if (originResult.code !== 0) {
-          ctx.ui.notify("No upstream branch and no origin remote found.", "error");
-          return;
-        }
-
-        const pushResult = await git(pi, ctx.cwd, ["push", "-u", "origin", current], ctx.signal);
-        if (pushResult.code !== 0) {
-          ctx.ui.notify(pushResult.stderr.trim() || "Failed to push current branch.", "error");
-          return;
-        }
-      }
-
       const originResult = await git(pi, ctx.cwd, ["remote", "get-url", "origin"], ctx.signal);
-      const repo = firstLine(originResult.stdout) ? parseGitHubRemote(firstLine(originResult.stdout)) : null;
+      if (originResult.code !== 0) {
+        ctx.ui.notify("No origin remote found.", "error");
+        return;
+      }
+      const originUrl = firstLine(originResult.stdout);
+
+      const repo = parseGitHubRemote(originUrl);
       if (!repo) {
         ctx.ui.notify("origin remote is not a GitHub URL.", "error");
         return;
@@ -202,6 +200,53 @@ export default function (pi: ExtensionAPI) {
       if (!token) {
         ctx.ui.notify("Set GH_TOKEN or GITHUB_TOKEN to create PRs programmatically.", "error");
         return;
+      }
+
+      const existingPrResponse = await fetch(
+        `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls?head=${encodeURIComponent(`${repo.owner}:${current}`)}&state=open&per_page=1`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          signal: ctx.signal,
+        },
+      );
+      if (!existingPrResponse.ok) {
+        ctx.ui.notify(`GitHub API error (${existingPrResponse.status}) while checking for existing PRs.`, "error");
+        return;
+      }
+
+      const existingPrs = (await existingPrResponse.json().catch(() => [])) as Array<{ html_url?: string }>;
+      if (existingPrs.length > 0) {
+        const existingPrUrl = existingPrs[0]?.html_url;
+        ctx.ui.notify(existingPrUrl ? `This branch already has an open PR: ${existingPrUrl}` : "This branch already has an open PR.", "info");
+        return;
+      }
+
+      const upstreamResult = await git(pi, ctx.cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], ctx.signal);
+      if (upstreamResult.code === 0) {
+        const upstream = parseUpstreamRef(firstLine(upstreamResult.stdout));
+        if (upstream) {
+          const unpushedResult = await git(pi, ctx.cwd, ["rev-list", "--count", `${upstream.remote}/${upstream.branch}..${current}`], ctx.signal);
+          const unpushedCount = Number.parseInt(firstLine(unpushedResult.stdout), 10);
+          if (Number.isFinite(unpushedCount) && unpushedCount > 0) {
+            ctx.ui.notify(`Pushing ${unpushedCount} local commit(s) on ${current}...`, "info");
+            const pushResult = await git(pi, ctx.cwd, ["push", "origin", current], ctx.signal);
+            if (pushResult.code !== 0) {
+              ctx.ui.notify(pushResult.stderr.trim() || "Failed to push local commits.", "error");
+              return;
+            }
+          }
+        }
+      } else {
+        ctx.ui.notify(`Pushing ${current} to origin...`, "info");
+        const pushResult = await git(pi, ctx.cwd, ["push", "-u", "origin", current], ctx.signal);
+        if (pushResult.code !== 0) {
+          ctx.ui.notify(pushResult.stderr.trim() || "Failed to push current branch.", "error");
+          return;
+        }
       }
 
       ctx.ui.notify(`Creating PR for ${current} → ${target}...`, "info");
