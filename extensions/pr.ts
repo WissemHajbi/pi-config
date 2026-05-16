@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 function firstLine(text: string): string {
+  // Git commands often return multi-line output; keep only the first line.
   return text.trim().split(/\r?\n/)[0]?.trim() ?? "";
 }
 
@@ -12,6 +13,7 @@ function titleCase(text: string): string {
     .join(" ");
 }
 
+// Turn a branch slug into a readable fallback PR title.
 function humanizeBranchName(branch: string): string {
   const cleaned = branch
     .replace(/^origin\//, "")
@@ -24,6 +26,7 @@ function humanizeBranchName(branch: string): string {
   return cleaned ? titleCase(cleaned) : branch;
 }
 
+// Remove common commit prefixes so the PR copy reads cleanly.
 function stripConventionalPrefix(subject: string): string {
   return subject
     .replace(/^:[a-z0-9_+-]+:\s*/i, "")
@@ -38,6 +41,7 @@ function shorten(text: string, max = 72): string {
   return `${trimmed.slice(0, max - 1).trimEnd()}…`;
 }
 
+// Support the usual SSH and HTTPS GitHub remote formats.
 function parseGitHubRemote(remoteUrl: string): { webBase: string; owner: string; repo: string } | null {
   const sshLikeMatch = remoteUrl.match(/^git@([^:]+):([^/]+)\/([^/]+?)(?:\.git)?$/i);
   if (sshLikeMatch) {
@@ -60,6 +64,7 @@ function parseGitHubRemote(remoteUrl: string): { webBase: string; owner: string;
   return null;
 }
 
+// Ignore symbolic refs like HEAD and keep only real remote branches.
 function cleanRemoteBranchName(ref: string): string | null {
   if (!ref.startsWith("origin/")) return null;
   const branch = ref.slice("origin/".length);
@@ -67,6 +72,7 @@ function cleanRemoteBranchName(ref: string): string | null {
   return branch;
 }
 
+// Split an upstream ref such as origin/main into remote + branch.
 function parseUpstreamRef(ref: string): { remote: string; branch: string } | null {
   const [remote, ...branchParts] = ref.split("/");
   const branch = branchParts.join("/").trim();
@@ -100,6 +106,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      // Collect local and remote branches so the user can choose a base branch.
       const branchesResult = await git(pi, ctx.cwd, ["for-each-ref", "--format=%(refname:short)", "refs/heads"], ctx.signal);
       const localBranches = branchesResult.stdout
         .split(/\r?\n/)
@@ -154,6 +161,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      // Use the recent commit subjects to build the PR title and summary.
       const subjectsResult = await git(pi, ctx.cwd, ["log", "--format=%s", `${mergeBase}..${current}`], ctx.signal);
       const subjects = subjectsResult.stdout
         .split(/\r?\n/)
@@ -177,12 +185,10 @@ export default function (pi: ExtensionAPI) {
         "Changes",
         ...(recentChanges.length > 0 ? recentChanges.map((subject) => `- ${subject}`) : ["- Changes ready for review"]),
         ...(stat ? [`- ${stat}`] : []),
-        "",
-        "Testing",
-        "- Not run",
       ];
       const body = bodyLines.join("\n");
 
+      // Resolve origin to a GitHub repository before calling the API.
       const originResult = await git(pi, ctx.cwd, ["remote", "get-url", "origin"], ctx.signal);
       if (originResult.code !== 0) {
         ctx.ui.notify("No origin remote found.", "error");
@@ -196,12 +202,13 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? process.env.GITHUB_API_TOKEN ?? process.env.GITHUB_PAT;
+      const token = process.env.GH_TOKEN;
       if (!token) {
         ctx.ui.notify("Set GH_TOKEN or GITHUB_TOKEN to create PRs programmatically.", "error");
         return;
       }
 
+      // Exit early if GitHub already has an open PR for this branch.
       const existingPrResponse = await fetch(
         `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls?head=${encodeURIComponent(`${repo.owner}:${current}`)}&state=open&per_page=1`,
         {
@@ -225,6 +232,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      // Push any local commits before creating a new PR.
       const upstreamResult = await git(pi, ctx.cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], ctx.signal);
       if (upstreamResult.code === 0) {
         const upstream = parseUpstreamRef(firstLine(upstreamResult.stdout));
