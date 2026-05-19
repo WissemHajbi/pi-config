@@ -7,6 +7,7 @@
     "npm:@wissem_hajbi/pi-nointl",
     "npm:pi-mono-ask-user-question",
     "npm:pi-mono-context",
-    "npm:@agnishc/edb-diff-files"
+    "npm:@agnishc/edb-diff-files",
+    "npm:@jerryan/pi-todo-lite"
   ]
 }
