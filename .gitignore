@@ -1,3 +1,5 @@
 sessions/
 auth.json
 pi-trace.jsonl
+extensions/node_modules/
+trust.json
