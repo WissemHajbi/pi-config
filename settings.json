@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.79.0",
+  "lastChangelogVersion": "0.79.6",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.4",
   "defaultThinkingLevel": "medium",
@@ -7,7 +7,7 @@
     "npm:@wissem_hajbi/pi-nointl",
     "npm:pi-mono-ask-user-question",
     "npm:pi-mono-context",
-    "npm:@wissem_hajbi/pi-pomodoro-global",
     "npm:@wissem_hajbi/pi-vaultify"
-  ]
+  ],
+  "theme": "dark"
 }
